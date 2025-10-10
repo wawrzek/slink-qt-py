@@ -5,9 +5,10 @@ Supports both Bluetooth Classic (for EV3) and BLE devices
 """
 
 import sys
+import signal
 import json
 import ssl
-from PyQt6.QtCore import QObject, pyqtSlot, QByteArray
+from PyQt6.QtCore import QObject, pyqtSlot, QByteArray, QTimer
 from PyQt6.QtNetwork import QSslCertificate, QSslKey, QSslConfiguration, QSsl
 from PyQt6.QtWebSockets import QWebSocketServer, QWebSocket
 from PyQt6.QtBluetooth import (
@@ -258,8 +259,24 @@ class ScratchLinkServer(QObject):
         client.sendTextMessage(json.dumps(response))
 
 
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print("\nCtrl+C detected, shutting down...")
+    QApplication.quit()
+
+
 def main():
     app = QApplication(sys.argv)
+
+    # Set up signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Create a timer to allow Python to process signals
+    # The timer runs every 500ms and does nothing, but allows
+    # the Python interpreter to handle signals
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)
+    timer.start(500)
 
     # Start both BT and BLE servers
     bt_server = ScratchLinkServer(20110, 'BT')   # Classic Bluetooth
