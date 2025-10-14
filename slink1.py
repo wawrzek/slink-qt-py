@@ -2,26 +2,19 @@
 """
 Scratch Link implementation using PyQt6
 Supports both Bluetooth Classic (for EV3) and BLE devices
+Uses unencrypted WebSocket (WS) instead of WSS
 """
 
-import json
-import signal
-import ssl
 import sys
-from PyQt6.QtCore import QObject, pyqtSlot, QByteArray, QTimer
-from PyQt6.QtNetwork import (
-        QSsl,
-        QSslCertificate,
-        QSslConfiguration,
-        QSslKey,
-        QSslSocket
-)
+import signal
+import json
+from PyQt6.QtCore import QObject, pyqtSlot, QTimer
 from PyQt6.QtWebSockets import QWebSocketServer, QWebSocket
 from PyQt6.QtBluetooth import (
-    QBluetoothAddress,
     QBluetoothDeviceDiscoveryAgent,
     QBluetoothDeviceInfo,
     QBluetoothSocket,
+    QBluetoothAddress,
     QLowEnergyController
 )
 from PyQt6.QtWidgets import QApplication
@@ -36,14 +29,11 @@ class ScratchLinkServer(QObject):
         self.mode = mode  # 'BT' for classic, 'BLE' for low energy
         self.clients = []
 
-        # Setup WebSocket server
+        # Setup WebSocket server (NonSecureMode for WS instead of WSS)
         self.server = QWebSocketServer(
             f"Scratch Link {mode}",
-            QWebSocketServer.SslMode.SecureMode
+            QWebSocketServer.SslMode.NonSecureMode
         )
-
-        # Setup SSL (you'll need to generate certificates)
-        self.setup_ssl()
 
         # Bluetooth components
         self.bt_discovery = QBluetoothDeviceDiscoveryAgent()
@@ -55,33 +45,10 @@ class ScratchLinkServer(QObject):
 
         # Start server
         if self.server.listen(port=self.port):
-            print(f"Scratch Link {mode} server listening on port {self.port}")
+            print(f"Scratch Link {mode} server listening on WS port {self.port}")
             self.server.newConnection.connect(self.on_new_connection)
         else:
             print(f"Failed to start server on port {self.port}")
-
-    def setup_ssl(self):
-        """Setup SSL certificates for WSS connection"""
-        # NOTE: You need to generate self-signed certificates
-        # openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-        try:
-            # Load certificate and key
-            with open('cert.pem', 'rb') as f:
-                cert = QSslCertificate(f.read())
-            with open('key.pem', 'rb') as f:
-                key = QSslKey(f.read(), QSsl.KeyAlgorithm.Rsa)
-
-            ssl_config = QSslConfiguration.defaultConfiguration()
-            ssl_config.setLocalCertificate(cert)
-            ssl_config.setPrivateKey(key)
-            ssl_config.setPeerVerifyMode(QSslSocket.PeerVerifyMode.VerifyNone)
-
-            self.server.setSslConfiguration(ssl_config)
-            print("SSL configuration loaded successfully")
-        except FileNotFoundError:
-            print("Warning: SSL certificates not found. Generate with:")
-            print("openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes")
 
     @pyqtSlot()
     def on_new_connection(self):
@@ -284,15 +251,12 @@ def main():
     timer.timeout.connect(lambda: None)
     timer.start(500)
 
-    # Start both BT and BLE servers
+    # Start both BT and BLE servers on WS (unencrypted)
     bt_server = ScratchLinkServer(20110, 'BT')   # Classic Bluetooth
     ble_server = ScratchLinkServer(20111, 'BLE')  # Bluetooth Low Energy
 
-    print("\nScratch Link servers started!")
-    print("Make sure to:")
-    print("1. Generate SSL certificates (cert.pem and key.pem)")
-    print("2. Add cert.pem to your browser's trusted certificates")
-    print("3. Use Scratch 3.0 in your browser")
+    print("\nScratch Link servers started (WS mode - unencrypted)!")
+    print("Connect from Scratch using ws://localhost:20110 and ws://localhost:20111")
 
     sys.exit(app.exec())
 
