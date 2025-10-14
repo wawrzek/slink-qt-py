@@ -4,18 +4,24 @@ Scratch Link implementation using PyQt6
 Supports both Bluetooth Classic (for EV3) and BLE devices
 """
 
-import sys
-import signal
 import json
+import signal
 import ssl
+import sys
 from PyQt6.QtCore import QObject, pyqtSlot, QByteArray, QTimer
-from PyQt6.QtNetwork import QSslCertificate, QSslKey, QSslConfiguration, QSsl
+from PyQt6.QtNetwork import (
+        QSsl,
+        QSslCertificate,
+        QSslConfiguration,
+        QSslKey,
+        QSslSocket
+)
 from PyQt6.QtWebSockets import QWebSocketServer, QWebSocket
 from PyQt6.QtBluetooth import (
+    QBluetoothAddress,
     QBluetoothDeviceDiscoveryAgent,
     QBluetoothDeviceInfo,
     QBluetoothSocket,
-    QBluetoothAddress,
     QLowEnergyController
 )
 from PyQt6.QtWidgets import QApplication
