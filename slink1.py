@@ -40,6 +40,7 @@ class ScratchLinkServer(QObject):
         self.bt_discovery.deviceDiscovered.connect(self.on_device_discovered)
         self.bt_discovery.finished.connect(self.on_discovery_finished)
 
+        self.discovered_devices = {}  # Store discovered devices by address
         self.bt_socket = None  # For classic Bluetooth
         self.ble_controller = None  # For BLE
 
@@ -114,12 +115,16 @@ class ScratchLinkServer(QObject):
             self.bt_socket.connected.connect(lambda: self.on_bt_connected(client, data))
             self.bt_socket.errorOccurred.connect(lambda err: self.on_bt_error(client, err))
         else:
-            # BLE connection
-            address = QBluetoothAddress(peripheral_id)
-            self.ble_controller = QLowEnergyController.createCentral(address)
-            self.ble_controller.connected.connect(lambda: self.on_ble_connected(client, data))
-            self.ble_controller.errorOccurred.connect(lambda err: self.on_ble_error(client, err))
-            self.ble_controller.connectToDevice()
+            # BLE connection - need QBluetoothDeviceInfo, not just address
+            if peripheral_id in self.discovered_devices:
+                device_info = self.discovered_devices[peripheral_id]
+                # Keep a reference to prevent garbage collection
+                self.ble_controller = QLowEnergyController.createCentral(device_info, self)
+                self.ble_controller.connected.connect(lambda: self.on_ble_connected(client, data))
+                self.ble_controller.errorOccurred.connect(lambda err: self.on_ble_error(client, err))
+                self.ble_controller.connectToDevice()
+            else:
+                self.send_error(client, f"Device {peripheral_id} not found. Please discover devices first.")
 
     def handle_send(self, client, data):
         """Send data to connected Bluetooth device"""
@@ -165,7 +170,13 @@ class ScratchLinkServer(QObject):
     @pyqtSlot(QBluetoothDeviceInfo)
     def on_device_discovered(self, device):
         """Handle discovered Bluetooth device"""
-        print(f"Found device: {device.name()} - {device.address().toString()}")
+        device_address = device.address().toString()
+        print(f"Found device: {device.name()} - {device_address}")
+        
+        # Store a copy of the device info for later connection
+        # This prevents garbage collection issues
+        device_copy = QBluetoothDeviceInfo(device)
+        self.discovered_devices[device_address] = device_copy
 
         # Send device info to Scratch
         if hasattr(self, 'current_client'):
@@ -173,7 +184,7 @@ class ScratchLinkServer(QObject):
                 'jsonrpc': '2.0',
                 'method': 'didDiscoverPeripheral',
                 'params': {
-                    'peripheralId': device.address().toString(),
+                    'peripheralId': device_address,
                     'name': device.name(),
                     'rssi': device.rssi()
                 }
