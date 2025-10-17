@@ -1,0 +1,127 @@
+# Slink4
+
+## No SSL
+
+### Problem
+
+*Scratch Link does not use SSL*
+
+Let's modify the code to remove WSS and use only WS (unencrypted WebSocket).
+
+### Key changes:
+
+* Removed SSL imports - Deleted ssl, QSslCertificate, QSslKey, QSslConfiguration, and QSsl imports
+* Changed server mode - Changed from QWebSocketServer.SslMode.SecureMode to QWebSocketServer.SslMode.NonSecureMode
+* Removed setup_ssl() method - Completely deleted the SSL certificate setup code
+* Updated startup messages - Changed messages to indicate WS mode instead of WSS, and removed certificate generation instructions
+* No certificate files needed - You no longer need cert.pem and key.pem files
+
+The server now runs on standard unencrypted WebSocket (WS) on ports 20110 and 20111, which matches Scratch-Link's simpler WS-only requirement. This eliminates the complexity of SSL certificates while maintaining full functionality for Bluetooth communication.
+
+# Slink6
+
+## Segmentation Fault
+
+### Problem
+
+*There is a segmentation fault after the start*
+
+A segmentation fault in PyQt6 Bluetooth code usually indicates an object lifetime issue. The problem is likely that the QBluetoothDeviceInfo objects are being garbage collected. Let me fix this by making copies of the device info:
+
+> I've made two key fixes to prevent the segmentation fault:
+
+### Key changes:
+
+* Created a copy of QBluetoothDeviceInfo - When storing discovered devices, I now create a copy using QBluetoothDeviceInfo(device) to ensure the object persists
+* Added parent to QLowEnergyController - Changed createCentral(device_info) to createCentral(device_info, self) to set the server as the parent, ensuring proper Qt object lifetime management
+
+These changes should prevent the objects from being prematurely garbage collected, which was causing the segfault. Try running it again now!
+
+## Wrong arguments
+
+### Problem
+
+*The app produce an error when connecting to EV3*
+
+The error shows that QLowEnergyController.createCentral() expects a QBluetoothDeviceInfo object, not just a QBluetoothAddress. We need to store the discovered devices and look them up when connecting.
+
+> Perfect! The issue was that QLowEnergyController.createCentral() requires a QBluetoothDeviceInfo object, not just a QBluetoothAddress.
+
+### What Claude fixed:
+
+* Added self.discovered_devices = {} - A dictionary to store discovered devices by their address
+* Updated on_device_discovered() - Now stores each discovered device in the dictionary
+* Fixed handle_connect() for BLE - Now looks up the device from discovered_devices and uses the QBluetoothDeviceInfo object to create the controller
+
+Now when you discover devices, they're stored, and when Scratch tries to connect, the code will use the proper device info object instead of just the address.
+
+# Slink 7
+
+## Repating logs lines
+
+### Problem
+
+*The application prints the following line (with incremental id).*
+
+Good! The application is receiving messages from Scratch to send to the EV3. The base64 encoded message contains EV3 direct commands. However, I notice the code has an issue - the handle_send method doesn't handle errors properly and may not be reading responses.
+
+### Key changes:
+
+* Added self.current_client - Tracks which WebSocket client is using the Bluetooth connection
+* Added readyRead signal handler - Connected self.bt_socket.readyRead to on_bt_data_ready() so responses from the EV3 are automatically read and sent back to Scratch
+* Improved handle_send() - Now checks if the socket is actually connected before sending, and reports the actual number of bytes written
+* Added on_bt_data_ready() - This method automatically reads data from the EV3 when it arrives and sends it back to Scratch in the proper JSON-RPC format
+
+Now when the EV3 sends responses back (like sensor readings or command acknowledgments), they'll be automatically forwarded to Scratch. The messages you're seeing are EV3 direct commands being sent successfully!
+
+## Still oo action from EV3
+
+### Problem
+
+*There seems not be any action from EV3*
+
+### Key changes:
+
+I've added better debugging to help diagnose the issue:
+
+* Added flush() after writing to force immediate send
+* Added hex dump of the payload being sent
+* Added socket state debugging when connected and when sending
+* Better error messages showing the actual error string
+
+# Slink 11
+
+## BLT Error
+
+### Problem
+
+*The application uses BLE not Classic*
+
+"BLE connected!" - It's using the BLE (Bluetooth Low Energy) server on port 20111
+"BLE error: Error.UnknownError" - BLE connection failed
+Messages are being received but there's no actual Bluetooth connection
+
+The EV3 uses Classic Bluetooth (RFCOMM), not BLE! Scratch is connecting to the wrong port. The EV3 should connect to port 20110 (BT), not 20111 (BLE).
+
+_Docs shows that Scratch Links expose only one port and separate BLT and
+Classic BT internally, but haven't told Claude abot it yet._
+
+### Key changes:
+
+* Start only BT Classic server on port 20111
+
+## Attribute Error
+
+### Problem
+
+```
+AttributeError: type object 'QBluetoothSocket' has no attribute 'RfcommSocket
+```
+
+Claude suggested a change which lead to another issue and yet another wrong
+suggetstion.
+In the end the right improvment was:
+
+### Key changes
+
+* I've changed it to use the parameterless constructor QBluetoothSocket() which creates an RFCOMM socket by default.
