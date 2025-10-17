@@ -15,6 +15,7 @@ from PyQt6.QtBluetooth import (
     QBluetoothDeviceInfo,
     QBluetoothSocket,
     QBluetoothAddress,
+    QBluetoothServiceInfo,
     QLowEnergyController
 )
 from PyQt6.QtWidgets import QApplication
@@ -43,6 +44,7 @@ class ScratchLinkServer(QObject):
         self.discovered_devices = {}  # Store discovered devices by address
         self.bt_socket = None  # For classic Bluetooth
         self.ble_controller = None  # For BLE
+        self.current_client = None  # Track which client is using BT
 
         # Start server
         if self.server.listen(port=self.port):
@@ -106,14 +108,17 @@ class ScratchLinkServer(QObject):
         peripheral_id = params.get('peripheralId')
 
         print(f"Connecting to device: {peripheral_id}")
+        self.current_client = client
 
         if self.mode == 'BT':
-            # Classic Bluetooth connection
-            self.bt_socket = QBluetoothSocket(QBluetoothSocket.SocketType.RfcommSocket)
-            address = QBluetoothAddress(peripheral_id)
-            self.bt_socket.connectToService(address, 1)  # Port 1 for EV3
+            # Classic Bluetooth connection (default is RFCOMM)
+            self.bt_socket = QBluetoothSocket()
             self.bt_socket.connected.connect(lambda: self.on_bt_connected(client, data))
             self.bt_socket.errorOccurred.connect(lambda err: self.on_bt_error(client, err))
+            self.bt_socket.readyRead.connect(lambda: self.on_bt_data_ready(client))
+
+            address = QBluetoothAddress(peripheral_id)
+            self.bt_socket.connectToService(address, 1)  # Port 1 for EV3
         else:
             # BLE connection - need QBluetoothDeviceInfo, not just address
             if peripheral_id in self.discovered_devices:
@@ -139,14 +144,24 @@ class ScratchLinkServer(QObject):
         else:
             payload = message.encode()
 
+        print(f"Payload hex: {payload.hex()}")
+
         if self.mode == 'BT' and self.bt_socket:
-            self.bt_socket.write(payload)
-            response = {
-                'jsonrpc': '2.0',
-                'id': data.get('id'),
-                'result': len(payload)
-            }
-            client.sendTextMessage(json.dumps(response))
+            if self.bt_socket.state() == QBluetoothSocket.SocketState.ConnectedState:
+                bytes_written = self.bt_socket.write(payload)
+                self.bt_socket.flush()  # Force send immediately
+                print(f"Sent {bytes_written} bytes to EV3 (state: {self.bt_socket.state()})")
+                response = {
+                    'jsonrpc': '2.0',
+                    'id': data.get('id'),
+                    'result': bytes_written
+                }
+                client.sendTextMessage(json.dumps(response))
+            else:
+                print(f"Socket state: {self.bt_socket.state()}")
+                self.send_error(client, "Bluetooth socket not connected")
+        else:
+            self.send_error(client, "No Bluetooth connection available")
 
     def handle_read(self, client, data):
         """Read data from connected Bluetooth device"""
@@ -172,7 +187,7 @@ class ScratchLinkServer(QObject):
         """Handle discovered Bluetooth device"""
         device_address = device.address().toString()
         print(f"Found device: {device.name()} - {device_address}")
-        
+
         # Store a copy of the device info for later connection
         # This prevents garbage collection issues
         device_copy = QBluetoothDeviceInfo(device)
@@ -198,7 +213,9 @@ class ScratchLinkServer(QObject):
 
     def on_bt_connected(self, client, data):
         """Classic Bluetooth connection established"""
-        print("Bluetooth connected!")
+        print(f"Bluetooth connected! Socket state: {self.bt_socket.state()}")
+        print(f"Socket is writable: {self.bt_socket.isWritable()}")
+        print(f"Socket is readable: {self.bt_socket.isReadable()}")
         response = {
             'jsonrpc': '2.0',
             'id': data.get('id'),
@@ -206,10 +223,30 @@ class ScratchLinkServer(QObject):
         }
         client.sendTextMessage(json.dumps(response))
 
+    def on_bt_data_ready(self, client):
+        """Handle incoming data from Bluetooth device"""
+        if self.bt_socket and self.bt_socket.bytesAvailable() > 0:
+            data_bytes = self.bt_socket.readAll()
+            import base64
+            encoded = base64.b64encode(bytes(data_bytes)).decode()
+
+            print(f"Received {len(data_bytes)} bytes from EV3")
+
+            response = {
+                'jsonrpc': '2.0',
+                'method': 'didReceiveMessage',
+                'params': {
+                    'message': encoded,
+                    'encoding': 'base64'
+                }
+            }
+            client.sendTextMessage(json.dumps(response))
+
     def on_bt_error(self, client, error):
         """Handle Bluetooth connection error"""
-        print(f"Bluetooth error: {error}")
-        self.send_error(client, f"Bluetooth error: {error}")
+        error_string = self.bt_socket.errorString() if self.bt_socket else "Unknown error"
+        print(f"Bluetooth error: {error} - {error_string}")
+        self.send_error(client, f"Bluetooth error: {error_string}")
 
     def on_ble_connected(self, client, data):
         """BLE connection established"""
@@ -263,8 +300,10 @@ def main():
     timer.start(500)
 
     # Start both BT and BLE servers on WS (unencrypted)
-    bt_server = ScratchLinkServer(20110, 'BT')   # Classic Bluetooth
-    ble_server = ScratchLinkServer(20111, 'BLE')  # Bluetooth Low Energy
+    bt_server = ScratchLinkServer(20111, 'BT')   # Classic Bluetooth
+    #bt_server = ScratchLinkServer(20110, 'BT')   # Classic Bluetooth
+    #ble_server = ScratchLinkServer(20111, 'BLE')  # Bluetooth Low Energy
+
 
     print("\nScratch Link servers started (WS mode - unencrypted)!")
     print("Connect from Scratch using ws://localhost:20110 and ws://localhost:20111")
