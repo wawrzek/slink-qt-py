@@ -16,6 +16,8 @@ from PyQt6.QtBluetooth import (
     QBluetoothSocket,
     QBluetoothAddress,
     QBluetoothServiceInfo,
+    QBluetoothServiceDiscoveryAgent,
+    QBluetoothUuid,
     QLowEnergyController
 )
 from PyQt6.QtWidgets import QApplication
@@ -45,6 +47,8 @@ class ScratchLinkServer(QObject):
         self.bt_socket = None  # For classic Bluetooth
         self.ble_controller = None  # For BLE
         self.current_client = None  # Track which client is using BT
+        self.service_discovery = None  # For service discovery
+        self.pending_connect_data = None  # Store connect request data
 
         # Start server
         if self.server.listen(port=self.port):
@@ -116,9 +120,12 @@ class ScratchLinkServer(QObject):
             self.bt_socket.connected.connect(lambda: self.on_bt_connected(client, data))
             self.bt_socket.errorOccurred.connect(lambda err: self.on_bt_error(client, err))
             self.bt_socket.readyRead.connect(lambda: self.on_bt_data_ready(client))
-
             address = QBluetoothAddress(peripheral_id)
-            self.bt_socket.connectToService(address, 1)  # Port 1 for EV3
+            # Use Serial Port Profile UUID for EV3 (required by BlueZ on Linux)
+            # SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
+            spp_uuid = QBluetoothUuid("00001101-0000-1000-8000-00805F9B34FB")
+            self.bt_socket.connectToService(address, spp_uuid)
+            print(f"Connecting to {peripheral_id} using SPP UUID...")
         else:
             # BLE connection - need QBluetoothDeviceInfo, not just address
             if peripheral_id in self.discovered_devices:
@@ -187,12 +194,10 @@ class ScratchLinkServer(QObject):
         """Handle discovered Bluetooth device"""
         device_address = device.address().toString()
         print(f"Found device: {device.name()} - {device_address}")
-
         # Store a copy of the device info for later connection
         # This prevents garbage collection issues
         device_copy = QBluetoothDeviceInfo(device)
         self.discovered_devices[device_address] = device_copy
-
         # Send device info to Scratch
         if hasattr(self, 'current_client'):
             response = {
@@ -210,6 +215,25 @@ class ScratchLinkServer(QObject):
     def on_discovery_finished(self):
         """Discovery scan completed"""
         print("Discovery finished")
+
+    def on_service_discovered(self, service):
+        """Handle discovered Bluetooth service"""
+        print(f"Found service: {service.serviceName()} - {service.serviceUuid().toString()}")
+        # Connect to the first SPP service found
+        if service.serviceUuid() == QBluetoothUuid("00001101-0000-1000-8000-00805F9B34FB"):
+            print("Found SPP service, connecting...")
+            self.bt_socket.connectToService(service)
+            self.service_discovery.stop()
+
+    def on_service_discovery_finished(self):
+        """Service discovery completed"""
+        print("Service discovery finished")
+        if self.bt_socket and self.bt_socket.state() != QBluetoothSocket.SocketState.ConnectedState:
+            # No SPP service found or connection failed
+            if self.pending_connect_data:
+                client, data = self.pending_connect_data
+                self.send_error(client, "Could not find SPP service on device")
+                self.pending_connect_data = None
 
     def on_bt_connected(self, client, data):
         """Classic Bluetooth connection established"""
@@ -229,9 +253,7 @@ class ScratchLinkServer(QObject):
             data_bytes = self.bt_socket.readAll()
             import base64
             encoded = base64.b64encode(bytes(data_bytes)).decode()
-
             print(f"Received {len(data_bytes)} bytes from EV3")
-
             response = {
                 'jsonrpc': '2.0',
                 'method': 'didReceiveMessage',
